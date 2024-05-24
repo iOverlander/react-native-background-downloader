@@ -1,5 +1,7 @@
 package com.eko;
 
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
 import com.eko.handlers.OnBegin;
@@ -189,20 +191,22 @@ public class RNBackgroundDownloaderModule extends ReactContextBaseJavaModule {
     downloadIdToConfig.put(downloadId, config);
     saveDownloadIdToConfigMap();
 
-    try {
-      OnBegin onBeginThread = new OnBegin(config, this::onBeginDownload);
-      onBeginThread.start();
-      onBeginThread.join();
+    new Thread(() -> {
+      try {
+        OnBegin onBeginThread = new OnBegin(config, this::onBeginDownload);
+        onBeginThread.start();
+        onBeginThread.join();
 
-      long bytesDownloaded = 0;
-      long bytesTotal = onBeginThread.getBytesExpected();
+        long bytesDownloaded = 0;
+        long bytesTotal = onBeginThread.getBytesExpected();
 
-      OnProgress onProgressThread = new OnProgress(config, downloader, downloadId, bytesDownloaded, bytesTotal, this::onProgressDownload);
-      configIdToProgressThreads.put(config.id, onProgressThread);
-      onProgressThread.start();
-    } catch (Exception e) {
-      Log.e(getName(), "resumeTasks: " + Log.getStackTraceString(e));
-    }
+        OnProgress onProgressThread = new OnProgress(config, downloader, downloadId, bytesDownloaded, bytesTotal, this::onProgressDownload);
+        configIdToProgressThreads.put(config.id, onProgressThread);
+        onProgressThread.start();
+      } catch (Exception e) {
+        Log.e(getName(), "resumeTasks: " + Log.getStackTraceString(e));
+      }
+    }).start();
   }
 
   private void removeTaskFromMap(long downloadId) {
@@ -282,7 +286,7 @@ public class RNBackgroundDownloaderModule extends ReactContextBaseJavaModule {
     synchronized (sharedLock) {
       Long downloadId = configIdToDownloadId.get(configId);
       if (downloadId != null) {
-        downloader.pauseDownload(downloadId);
+        downloader.pause(downloadId);
       }
     }
   }
@@ -293,7 +297,7 @@ public class RNBackgroundDownloaderModule extends ReactContextBaseJavaModule {
     synchronized (sharedLock) {
       Long downloadId = configIdToDownloadId.get(configId);
       if (downloadId != null) {
-        downloader.resumeDownload(downloadId);
+        downloader.resume(downloadId);
       }
     }
   }
@@ -305,7 +309,7 @@ public class RNBackgroundDownloaderModule extends ReactContextBaseJavaModule {
       if (downloadId != null) {
         stopTaskProgress(configId);
         removeTaskFromMap(downloadId);
-        downloader.cancelDownload(downloadId);
+        delay(() -> downloader.cancel(downloadId), 500);
       }
     }
   }
@@ -317,7 +321,7 @@ public class RNBackgroundDownloaderModule extends ReactContextBaseJavaModule {
       if (downloadId != null) {
         stopTaskProgress(configId);
         removeTaskFromMap(downloadId);
-        downloader.cancelDownload(downloadId);
+        delay(() -> downloader.cancel(downloadId), 500);
       }
     }
   }
@@ -356,7 +360,7 @@ public class RNBackgroundDownloaderModule extends ReactContextBaseJavaModule {
               configIdToDownloadId.put(config.id, downloadId);
               configIdToPercent.put(config.id, bytesDownloaded / bytesTotal);
             } else {
-              downloader.cancelDownload(downloadId);
+              downloader.cancel(downloadId);
             }
           } while (cursor.moveToNext());
         }
@@ -503,5 +507,9 @@ public class RNBackgroundDownloaderModule extends ReactContextBaseJavaModule {
     } catch (IOException e) {
       throw new RuntimeException(e);
     }
+  }
+
+  private void delay(Runnable task, long delay) {
+    new Handler(Looper.getMainLooper()).postDelayed(task, delay);
   }
 }
