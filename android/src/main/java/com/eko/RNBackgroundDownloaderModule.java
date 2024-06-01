@@ -6,6 +6,9 @@ import android.util.Log;
 
 import com.eko.handlers.OnBegin;
 import com.eko.handlers.OnProgress;
+import com.eko.handlers.OnBeginState;
+import com.eko.handlers.OnProgressState;
+import com.eko.utils.FileUtils;
 
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.Promise;
@@ -22,15 +25,15 @@ import android.app.DownloadManager;
 import android.app.DownloadManager.Request;
 
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.nio.channels.FileChannel;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import javax.annotation.Nullable;
 
@@ -62,7 +65,7 @@ public class RNBackgroundDownloaderModule extends ReactContextBaseJavaModule {
   private static final int ERR_NO_WRITE_PERMISSION = 2;
   private static final int ERR_FILE_NOT_FOUND = 3;
   private static final int ERR_OTHERS = 100;
-
+  private final ExecutorService executorPool = Executors.newCachedThreadPool();
   private static final Map<Integer, Integer> stateMap = new HashMap<Integer, Integer>() {
     {
       put(DownloadManager.STATUS_FAILED, TASK_CANCELING);
@@ -80,7 +83,7 @@ public class RNBackgroundDownloaderModule extends ReactContextBaseJavaModule {
   private Map<Long, RNBGDTaskConfig> downloadIdToConfig = new HashMap<>();
   private final Map<String, Long> configIdToDownloadId = new HashMap<>();
   private final Map<String, Double> configIdToPercent = new HashMap<>();
-  private final Map<String, OnProgress> configIdToProgressThreads = new HashMap<>();
+  private final Map<String, Future<OnProgressState>> configIdToProgressFuture = new HashMap<>();
   private final Map<String, WritableMap> progressReports = new HashMap<>();
   private int progressInterval = 0;
   private Date lastProgressReportedAt = new Date();
@@ -197,20 +200,20 @@ public class RNBackgroundDownloaderModule extends ReactContextBaseJavaModule {
         long bytesDownloaded = 0;
         long bytesTotal = 0;
 
-        // Condition to give onBegin feedback once.
         if (!config.reportedBegin) {
-          OnBegin onBeginThread = new OnBegin(config, this::onBeginDownload);
-          onBeginThread.start();
-          onBeginThread.join();
-          bytesTotal = onBeginThread.getBytesExpected();
+          OnBegin onBeginCallable = new OnBegin(config, this::onBeginDownload);
+          Future<OnBeginState> onBeginFuture = executorPool.submit(onBeginCallable);
+          OnBeginState onBeginState = onBeginFuture.get();
+          bytesTotal = onBeginState.expectedBytes;
+
           config.reportedBegin = true;
           downloadIdToConfig.put(downloadId, config);
           saveDownloadIdToConfigMap();
         }
 
-        OnProgress onProgressThread = new OnProgress(config, downloader, downloadId, bytesDownloaded, bytesTotal, this::onProgressDownload);
-        configIdToProgressThreads.put(config.id, onProgressThread);
-        onProgressThread.start();
+        OnProgress onProgressCallable = new OnProgress(config, downloader, downloadId, bytesDownloaded, bytesTotal, this::onProgressDownload);
+        Future<OnProgressState> onProgressFuture = executorPool.submit(onProgressCallable);
+        configIdToProgressFuture.put(config.id, onProgressFuture);
       } catch (Exception e) {
         Log.e(getName(), "resumeTasks: " + Log.getStackTraceString(e));
       }
@@ -434,10 +437,12 @@ public class RNBackgroundDownloaderModule extends ReactContextBaseJavaModule {
   private void onSuccessfulDownload(RNBGDTaskConfig config, WritableMap downloadStatus) {
     String localUri = downloadStatus.getString("localUri");
 
-    // TODO: We need to move it to a more suitable location. [NOT TESTED]
+    // TODO: We need to move it to a more suitable location.
+    //       Maybe somewhere in downloadReceiver?
     // Feedback if any error occurs after downloading the file.
     try {
-      setFileChangesBeforeCompletion(localUri, config.destination);
+      Future<Boolean> future = setFileChangesBeforeCompletion(localUri, config.destination);
+      future.get();
     } catch (Exception e) {
       WritableMap newDownloadStatus = Arguments.createMap();
       newDownloadStatus.putString("downloadId", downloadStatus.getString("downloadId"));
@@ -505,56 +510,34 @@ public class RNBackgroundDownloaderModule extends ReactContextBaseJavaModule {
   }
 
   private void stopTaskProgress(String configId) {
-    OnProgress onProgressThread = configIdToProgressThreads.get(configId);
-    if (onProgressThread != null) {
-      onProgressThread.interrupt();
+    Future<OnProgressState> onProgressFuture = configIdToProgressFuture.get(configId);
+    if (onProgressFuture != null) {
+      onProgressFuture.cancel(true);
       configIdToPercent.remove(configId);
-      configIdToProgressThreads.remove(configId);
+      configIdToProgressFuture.remove(configId);
     }
   }
 
-  private void setFileChangesBeforeCompletion(String targetSrc, String destinationSrc) throws Exception {
-    File file = new File(targetSrc);
-    File destination = new File(destinationSrc);
-    File destinationDir = null;
-
-    try {
-      if(file.exists()) {
-        if (destination.exists()) {
-          destination.delete();
+  private Future<Boolean> setFileChangesBeforeCompletion(String targetSrc, String destinationSrc) {
+    return executorPool.submit(() -> {
+      File file = new File(targetSrc);
+      File destination = new File(destinationSrc);
+      File destinationParent = null;
+      try {
+        if(file.exists()) {
+          FileUtils.rm(destination);
+          destinationParent = FileUtils.mkdirParent(destination);
+          FileUtils.mv(file, destination);
         }
-
-        File destinationParent = new File(destination.getParent());
-        if (!destinationParent.exists()) {
-          destinationDir = destinationParent;
-          destinationParent.mkdirs();
-        }
-
-        moveFile(file, destination);
+      } catch (IOException e) {
+        FileUtils.rm(file);
+        FileUtils.rm(destination);
+        FileUtils.rm(destinationParent);
+        throw new Exception(e);
       }
-    } catch (IOException e) {
-      file.delete();
-      destination.delete();
-      if (destinationDir != null) destinationDir.delete();
-      throw new Exception(e);
-    }
-  }
 
-  private void moveFile(File targetFile, File destinationFile) throws IOException {
-    try (
-            FileChannel inChannel = new FileInputStream(targetFile).getChannel();
-            FileChannel outChannel = new FileOutputStream(destinationFile).getChannel()
-    ) {
-      long bytesTransferred = 0;
-      long totalBytes = inChannel.size();
-      while (bytesTransferred < totalBytes) {
-        long remainingBytes = totalBytes - bytesTransferred;
-        long chunkSize = Math.min(remainingBytes, Integer.MAX_VALUE);
-        long transferredBytes = inChannel.transferTo(bytesTransferred, chunkSize, outChannel);
-        bytesTransferred += transferredBytes;
-      }
-      targetFile.delete();
-    }
+      return true;
+    });
   }
 
   private boolean delay(Runnable task, long delay) {
