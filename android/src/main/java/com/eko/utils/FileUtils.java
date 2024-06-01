@@ -2,7 +2,6 @@ package com.eko.utils;
 
 import android.content.Context;
 import android.os.StatFs;
-import android.util.Log;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -35,7 +34,6 @@ public class FileUtils {
     }
 
     public static boolean moveSmallFile(File sourceFile, File destinationFile) throws IOException {
-        Log.i("RNBackgroundDownloader", "moveSmallFile");
         try (
                 FileChannel inChannel = new FileInputStream(sourceFile).getChannel();
                 FileChannel outChannel = new FileOutputStream(destinationFile).getChannel()
@@ -46,7 +44,6 @@ public class FileUtils {
     }
 
     public static boolean moveBigFile(File sourceFile, File destinationFile) throws IOException {
-        Log.i("RNBackgroundDownloader", "moveBigFile");
         try (
                 FileChannel inChannel = new FileInputStream(sourceFile).getChannel();
                 FileChannel outChannel = new FileOutputStream(destinationFile).getChannel()
