@@ -417,10 +417,14 @@ public class RNBackgroundDownloaderModule extends ReactContextBaseJavaModule {
   }
 
   private void onProgressDownload(String configId, long bytesDownloaded, long bytesTotal) {
+    Date now = new Date();
+
     Double existPercent = configIdToPercent.get(configId);
+    double intervalSinceLastProgressReport = now.getTime() - lastProgressReportedAt.getTime();
     double prevPercent = existPercent != null ? existPercent : 0.0;
     double percent = bytesTotal > 0.0 ?  ((double) bytesDownloaded / bytesTotal) : 0.0;
-    if (percent - prevPercent > 0.01) {
+    double deltaPercent = percent - prevPercent;
+    if (deltaPercent > 0.01 || (intervalSinceLastProgressReport > 10.0 && deltaPercent > 0.0)) {
       WritableMap params = Arguments.createMap();
       params.putString("id", configId);
       params.putDouble("bytesDownloaded", bytesDownloaded);
@@ -429,8 +433,7 @@ public class RNBackgroundDownloaderModule extends ReactContextBaseJavaModule {
       configIdToPercent.put(configId, percent);
     }
 
-    Date now = new Date();
-    boolean isReportTimeDifference = now.getTime() - lastProgressReportedAt.getTime() > progressInterval;
+    boolean isReportTimeDifference = intervalSinceLastProgressReport > progressInterval;
     boolean isReportNotEmpty =!progressReports.isEmpty();
     if (isReportTimeDifference && isReportNotEmpty) {
       // Extra steps to avoid map always consumed errors.
