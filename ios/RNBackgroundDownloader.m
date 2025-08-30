@@ -502,16 +502,21 @@ RCT_EXPORT_METHOD(checkForExistingDownloads: (RCTPromiseResolveBlock)resolve rej
                 taskConfig.reportedBegin = YES;
             }
 
+            NSDate *now = [[NSDate alloc] init];
+            NSTimeInterval intervalSinceLastProgressReport = [now timeIntervalSinceDate:lastProgressReportedAt];
+
             NSNumber *prevPercent = idToPercentMap[taskConfig.id];
             NSNumber *prevBytes = idToLastBytesMap[taskConfig.id];
             NSNumber *percent = [NSNumber numberWithFloat:(float)bytesTotalWritten/(float)bytesTotalExpectedToWrite];
             
             // Check if we should report progress based on percentage OR bytes threshold
-            BOOL percentThresholdMet = [percent floatValue] - [prevPercent floatValue] > 0.01f;
+            float deltaPercent = [percent floatValue] - [prevPercent floatValue];
+            BOOL percentThresholdMet = deltaPercent > 0.01f;
             long long lastReportedBytes = prevBytes ? [prevBytes longLongValue] : 0;
             BOOL bytesThresholdMet = bytesTotalWritten - lastReportedBytes >= progressMinBytes;
+            BOOL timeThresholdMet = (intervalSinceLastProgressReport > 10.0f && deltaPercent > 0.0f);
             
-            if (percentThresholdMet || bytesThresholdMet) {
+            if (percentThresholdMet || bytesThresholdMet || timeThresholdMet) {
                 progressReports[taskConfig.id] = @{
                     @"id": taskConfig.id,
                     @"bytesDownloaded": [NSNumber numberWithLongLong: bytesTotalWritten],
@@ -521,8 +526,7 @@ RCT_EXPORT_METHOD(checkForExistingDownloads: (RCTPromiseResolveBlock)resolve rej
                 idToLastBytesMap[taskConfig.id] = [NSNumber numberWithLongLong: bytesTotalWritten];
             }
 
-            NSDate *now = [[NSDate alloc] init];
-            if ([now timeIntervalSinceDate:lastProgressReportedAt] > progressInterval && progressReports.count > 0) {
+            if (intervalSinceLastProgressReport > progressInterval && progressReports.count > 0) {
                 if (self.bridge && isJavascriptLoaded) {
                     [self sendEventWithName:@"downloadProgress" body:[progressReports allValues]];
                 }

@@ -493,17 +493,22 @@ public class RNBackgroundDownloaderModuleImpl extends ReactContextBaseJavaModule
   }
 
   private void onProgressDownload(String configId, long bytesDownloaded, long bytesTotal) {
+    Date now = new Date();
+
     Double existPercent = configIdToPercent.get(configId);
+    double intervalSinceLastProgressReport = now.getTime() - lastProgressReportedAt.getTime();
     Long existLastBytes = configIdToLastBytes.get(configId);
     double prevPercent = existPercent != null ? existPercent : 0.0;
     long prevBytes = existLastBytes != null ? existLastBytes : 0;
     double percent = bytesTotal > 0.0 ?  ((double) bytesDownloaded / bytesTotal) : 0.0;
+    double deltaPercent = percent - prevPercent;
 
     // Check if we should report progress based on percentage OR bytes threshold
-    boolean percentThresholdMet = percent - prevPercent > 0.01;
+    boolean percentThresholdMet = deltaPercent > 0.01;
     boolean bytesThresholdMet = bytesDownloaded - prevBytes >= progressMinBytes;
+    boolean timeThresholdMet = (intervalSinceLastProgressReport > 10.0 && deltaPercent > 0.0);
 
-    if (percentThresholdMet || bytesThresholdMet) {
+    if (percentThresholdMet || bytesThresholdMet || timeThresholdMet) {
       WritableMap params = Arguments.createMap();
       params.putString("id", configId);
       params.putDouble("bytesDownloaded", bytesDownloaded);
@@ -513,8 +518,7 @@ public class RNBackgroundDownloaderModuleImpl extends ReactContextBaseJavaModule
       configIdToLastBytes.put(configId, bytesDownloaded);
     }
 
-    Date now = new Date();
-    boolean isReportTimeDifference = now.getTime() - lastProgressReportedAt.getTime() > progressInterval;
+    boolean isReportTimeDifference = intervalSinceLastProgressReport > progressInterval;
     boolean isReportNotEmpty =!progressReports.isEmpty();
     if (isReportTimeDifference && isReportNotEmpty) {
       // Extra steps to avoid map always consumed errors.
