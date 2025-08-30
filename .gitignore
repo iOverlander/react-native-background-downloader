@@ -8,6 +8,7 @@
 node_modules/
 npm-debug.log
 yarn-error.log
+package-lock.json
 
 
 # Xcode
@@ -38,8 +39,10 @@ build/
 .gradle
 local.properties
 *.iml
+*.class
 
 # BUCK
 buck-out/
 \.buckd/
 *.keystore
+javac.*.args

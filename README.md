@@ -41,6 +41,44 @@ Then:
 cd ios && pod install
 ```
 
+### New Architecture Support
+
+This library supports React Native's New Architecture (Fabric + TurboModules) starting from React Native 0.70+.
+
+#### Automatic Detection
+The library automatically detects whether the New Architecture is enabled in your app and uses the appropriate implementation:
+- **New Architecture**: Uses TurboModules for optimal performance
+- **Legacy Architecture**: Uses the traditional bridge implementation
+
+#### Manual Setup (Advanced)
+If you need to manually configure the package for New Architecture:
+
+**iOS**: The library automatically detects New Architecture via compile-time flags.
+
+**Android**: For New Architecture, you can optionally use `RNBackgroundDownloaderTurboPackage` instead of the default package:
+```java
+import com.eko.RNBackgroundDownloaderTurboPackage;
+
+// In your MainApplication.java
+@Override
+protected List<ReactPackage> getPackages() {
+  return Arrays.<ReactPackage>asList(
+    // ... other packages
+    new RNBackgroundDownloaderTurboPackage() // For New Architecture
+  );
+}
+```
+
+#### Known Issues with New Architecture
+When using larger files with the New Architecture, you may encounter `ERROR_CANNOT_RESUME` (error code 1008). This is a known limitation of Android's DownloadManager, not specific to this library or the New Architecture. The error includes enhanced messaging to help diagnose the issue.
+
+**Workaround:** If you encounter this error frequently with large files, consider:
+1. Breaking large downloads into smaller chunks
+2. Implementing retry logic in your app
+3. Using alternative download strategies for very large files
+
+The library now provides enhanced error handling for this specific case with detailed logging and cleanup.
+
 ### Mostly automatic installation
 Any React Native version **`>= 0.60`** supports autolinking so nothing should be done.
 
@@ -76,21 +114,76 @@ For anything **`< 0.60`** run the following link command
 </details>
 
 ### iOS - Extra Mandatory Step
-In your `AppDelegate.m` add the following code:
-```objc
-...
-#import <RNBackgroundDownloader.h>
 
-...
+#### (react-native 0.77+)
 
-- (void)application:(UIApplication *)application handleEventsForBackgroundURLSession:(NSString *)identifier completionHandler:(void (^)(void))completionHandler
-{
-  [RNBackgroundDownloader setCompletionHandlerWithIdentifier:identifier completionHandler:completionHandler];
-}
+<details>
+  <summary>Click to expand</summary>
 
-...
-```
-Failing to add this code will result in canceled background downloads. If Xcode complains that RNBackgroundDownloader.h is missing, you might have forgotten to `pod install` first.
+  In your project bridging header file (e.g. `ios/{projectName}-Bridging-Header.h`)
+  add an import for RNBackgroundDownloader:
+
+  ```objc
+  ...
+  #import <RNBackgroundDownloader.h>
+  ```
+
+  Then in your `AppDelegate.swift` add the following method inside of your `AppDelegate` class:
+
+  ```swift
+  ...
+
+  @main
+  class AppDelegate: UIResponder, UIApplicationDelegate
+    ...
+
+    func application(
+      _ application: UIApplication,
+      handleEventsForBackgroundURLSession identifier: String,
+      completionHandler: @escaping () -> Void
+    ) {
+      RNBackgroundDownloader.setCompletionHandlerWithIdentifier(identifier, completionHandler: completionHandler)
+    }
+  }
+  ...
+  ```
+  Failing to add this code will result in canceled background downloads. If Xcode complains that RNBackgroundDownloader.h is missing, you might have forgotten to `pod install` first.
+</details>
+
+#### (react-native < 0.77)
+
+<details>
+  <summary>Click to expand</summary>
+
+  In your `AppDelegate.m` add the following code:
+  ```objc
+  ...
+  #import <RNBackgroundDownloader.h>
+
+  ...
+
+  - (void)application:(UIApplication *)application handleEventsForBackgroundURLSession:(NSString *)identifier completionHandler:(void (^)(void))completionHandler
+  {
+    [RNBackgroundDownloader setCompletionHandlerWithIdentifier:identifier completionHandler:completionHandler];
+  }
+
+  ...
+  ```
+  Failing to add this code will result in canceled background downloads. If Xcode complains that RNBackgroundDownloader.h is missing, you might have forgotten to `pod install` first.
+</details>
+
+## Compatibility
+
+### MMKV Storage Libraries
+
+This library uses MMKV for efficient storage and is compatible with popular React Native MMKV libraries:
+
+- **react-native-mmkv**: ✅ Compatible (v3.x and later)
+- **react-native-mmkv-storage**: ✅ Compatible
+
+The library uses flexible MMKV version ranges (iOS: `>= 2.1.0, < 3.0`, Android: `[2.1.0,3.0)`) to avoid version conflicts when used alongside other MMKV-based libraries. No additional configuration is required.
+
+**Note**: If you encounter build issues related to MMKV when using multiple MMKV-based libraries, ensure all libraries are up to date and consider cleaning your build cache (`cd ios && pod cache clean --all && pod install`).
 
 ## Usage
 
@@ -123,13 +216,56 @@ let task = download({
 })
 
 // Pause the task (iOS only)
+// Note: On Android, pause/resume is not supported by DownloadManager
 task.pause()
 
 // Resume after pause (iOS only)
+// Note: On Android, pause/resume is not supported by DownloadManager
 task.resume()
 
 // Cancel the task
 task.stop()
+```
+
+### Platform-Aware Pause/Resume
+
+```javascript
+import { Platform } from 'react-native'
+import { download, directories } from '@kesha-antonov/react-native-background-downloader'
+
+let task = download({
+  id: 'file123',
+  url: 'https://link-to-very.large/file.zip',
+  destination: `${directories.documents}/file.zip`,
+  metadata: {}
+}).begin(({ expectedBytes, headers }) => {
+  console.log(`Going to download ${expectedBytes} bytes!`)
+}).progress(({ bytesDownloaded, bytesTotal }) => {
+  console.log(`Downloaded: ${bytesDownloaded / bytesTotal * 100}%`)
+}).done(({ bytesDownloaded, bytesTotal }) => {
+  console.log('Download is done!', { bytesDownloaded, bytesTotal })
+}).error(({ error, errorCode }) => {
+  console.log('Download canceled due to error: ', { error, errorCode });
+})
+
+// Platform-aware pause/resume handling
+function pauseDownload() {
+  if (Platform.OS === 'ios') {
+    task.pause()
+    console.log('Download paused')
+  } else {
+    console.log('Pause not supported on Android. Consider using stop() instead.')
+  }
+}
+
+function resumeDownload() {
+  if (Platform.OS === 'ios') {
+    task.resume()
+    console.log('Download resumed')
+  } else {
+    console.log('Resume not supported on Android. You may need to restart the download.')
+  }
+}
 ```
 
 ### Re-Attaching to background downloads
@@ -192,6 +328,16 @@ let task = RNBackgroundDownloader.download({
 ```
 Headers given in the `download` function are **merged** with the ones given in `setConfig({ headers: { ... } })`.
 
+### Handling Slow-Responding URLs
+
+This library automatically includes connection timeout improvements for slow-responding URLs. By default, the following headers are added to all download requests on Android:
+
+- `Connection: keep-alive` - Keeps the connection open for better handling
+- `Keep-Alive: timeout=600, max=1000` - Sets a 10-minute keep-alive timeout
+- `User-Agent: ReactNative-BackgroundDownloader/3.2.6` - Proper user agent for better server compatibility
+
+These headers help prevent downloads from getting stuck in "pending" state when servers take several minutes to respond initially. You can override these headers by providing your own in the `headers` option.
+
 ## API
 
 ### RNBackgroundDownloader
@@ -236,6 +382,7 @@ Recommended to run at the init stage of the app.
 | -------------- | ------ | ---------------------------------------------------------------------------------------------------- |
 | `headers`     | Object | optional headers to use in all future downloads |
 | `progressInterval` | Number | Interval in which download progress sent from downloader. Number should be >= 250. It's in ms |
+| `progressMinBytes` | Number | Minimum number of bytes that must be downloaded before triggering progress callbacks. Used for hybrid progress reporting (triggers on either percentage >1% OR bytes threshold). Default is 1048576 (1MB). Number should be >= 0 |
 | `isLogsEnabled`   | Boolean | Enables/disables logs in library |
 
 ### DownloadTask
@@ -317,8 +464,12 @@ All callback methods return the current instance of the `DownloadTask` for chain
 ### `pause()`  (iOS only)
 Pauses the download
 
+**Note:** This functionality is not supported on Android due to limitations in the DownloadManager API. On Android, calling this method will log a warning but will not crash the application.
+
 ### `resume()`  (iOS only)
 Resumes a paused download
+
+**Note:** This functionality is not supported on Android due to limitations in the DownloadManager API. On Android, calling this method will log a warning but will not crash the application.
 
 ### `stop()`
 Stops the download for good and removes the file that was written so far
@@ -330,6 +481,24 @@ Stops the download for good and removes the file that was written so far
 ### `documents`
 
 An absolute path to the app's documents directory. It is recommended that you use this path as the target of downloaded files.
+
+## Platform-Specific Limitations
+
+### Android DownloadManager Limitations
+
+The Android implementation uses the system's `DownloadManager` service, which has some limitations compared to iOS:
+
+#### Pause/Resume Not Supported
+- **Issue**: Android's DownloadManager does not provide a public API for pausing and resuming downloads
+- **Impact**: Calling `task.pause()` or `task.resume()` on Android will log a warning but not perform any action
+- **Workaround**: If you need to stop a download, use `task.stop()` and restart it later with a new download request
+- **Technical Details**: The private APIs needed for pause/resume functionality are not accessible to third-party applications
+
+#### Alternative Approaches for Android
+If pause/resume functionality is critical for your application, consider:
+1. Using `task.stop()` and tracking progress to restart downloads from where they left off (if the server supports range requests)
+2. Implementing a custom download solution for Android that doesn't use DownloadManager
+3. Designing your app flow to minimize the need for pause/resume functionality
 
 ## Rules for proguard-rules.pro
 

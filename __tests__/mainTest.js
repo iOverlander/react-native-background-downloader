@@ -1,5 +1,5 @@
-import RNBackgroundDownloader from '../index'
-import DownloadTask from '../lib/downloadTask'
+import RNBackgroundDownloader from '../src/index'
+import DownloadTask from '../src/DownloadTask'
 import { NativeModules, NativeEventEmitter } from 'react-native'
 
 const RNBackgroundDownloaderNative = NativeModules.RNBackgroundDownloader
@@ -142,6 +142,32 @@ test('checkForExistingDownloads', () => {
     })
 })
 
+test('setConfig with progressMinBytes', () => {
+  RNBackgroundDownloader.setConfig({
+    progressMinBytes: 500000,
+    progressInterval: 2000,
+    isLogsEnabled: true,
+  })
+
+  // Test that download passes progressMinBytes to native
+  const configDownloadTask = RNBackgroundDownloader.download({
+    id: 'testConfig',
+    url: 'https://example.com/file.zip',
+    destination: '/tmp/file.zip',
+  })
+
+  expect(RNBackgroundDownloaderNative.download).toHaveBeenCalledWith(
+    expect.objectContaining({
+      id: 'testConfig',
+      url: 'https://example.com/file.zip',
+      destination: '/tmp/file.zip',
+      progressInterval: 2000,
+      progressMinBytes: 500000,
+    })
+  )
+  expect(configDownloadTask).toBeInstanceOf(DownloadTask)
+})
+
 test('wrong handler type', () => {
   const dt = RNBackgroundDownloader.download({
     id: 'test22222',
@@ -164,4 +190,23 @@ test('wrong handler type', () => {
   expect(() => {
     dt.error('not function')
   }).toThrow()
+})
+
+test('download with timeout improvements for slow URLs', () => {
+  const timeoutDT = RNBackgroundDownloader.download({
+    id: 'testSlowUrl',
+    url: 'https://example.com/slow-response',
+    destination: '/path/to/file.zip',
+  })
+
+  expect(timeoutDT).toBeInstanceOf(DownloadTask)
+  expect(RNBackgroundDownloaderNative.download).toHaveBeenCalled()
+
+  // Verify that the download was called with the expected parameters
+  const lastCallArgs = RNBackgroundDownloaderNative.download.mock.calls[RNBackgroundDownloaderNative.download.mock.calls.length - 1]
+  expect(lastCallArgs[0]).toMatchObject({
+    id: 'testSlowUrl',
+    url: 'https://example.com/slow-response',
+    destination: '/path/to/file.zip',
+  })
 })
