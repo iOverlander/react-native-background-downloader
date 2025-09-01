@@ -115,10 +115,48 @@ For anything **`< 0.60`** run the following link command
 
 ### iOS - Extra Mandatory Step
 
-#### (react-native 0.77+)
+#### Option 1: Using Expo Config Plugin (Recommended for Expo/EAS users)
+
+If you're using Expo or EAS Build, you can use the included Expo config plugin to automatically configure the iOS native code:
+
+**In your `app.json`:**
+```json
+{
+  "expo": {
+    "name": "Your App",
+    "plugins": [
+      "@kesha-antonov/react-native-background-downloader"
+    ]
+  }
+}
+```
+
+**Or in your `app.config.js`:**
+```js
+export default {
+  expo: {
+    name: "Your App",
+    plugins: [
+      "@kesha-antonov/react-native-background-downloader"
+    ]
+  }
+}
+```
+
+The plugin will automatically:
+- Add the required import to your AppDelegate (Objective-C) or Bridging Header (Swift)  
+- Add the `handleEventsForBackgroundURLSession` method to your AppDelegate
+- Handle both React Native < 0.77 (Objective-C) and >= 0.77 (Swift) projects
+
+After adding the plugin, run:
+```bash
+expo prebuild --clean
+```
+
+#### Option 2: Manual Setup
 
 <details>
-  <summary>Click to expand</summary>
+  <summary>Manual setup for React Native 0.77+ (Click to expand)</summary>
 
   In your project bridging header file (e.g. `ios/{projectName}-Bridging-Header.h`)
   add an import for RNBackgroundDownloader:
@@ -150,10 +188,8 @@ For anything **`< 0.60`** run the following link command
   Failing to add this code will result in canceled background downloads. If Xcode complains that RNBackgroundDownloader.h is missing, you might have forgotten to `pod install` first.
 </details>
 
-#### (react-native < 0.77)
-
 <details>
-  <summary>Click to expand</summary>
+  <summary>Manual setup for React Native < 0.77 (Click to expand)</summary>
 
   In your `AppDelegate.m` add the following code:
   ```objc
@@ -184,6 +220,44 @@ This library uses MMKV for efficient storage and is compatible with popular Reac
 The library uses flexible MMKV version ranges (iOS: `>= 2.1.0, < 3.0`, Android: `[2.1.0,3.0)`) to avoid version conflicts when used alongside other MMKV-based libraries. No additional configuration is required.
 
 **Note**: If you encounter build issues related to MMKV when using multiple MMKV-based libraries, ensure all libraries are up to date and consider cleaning your build cache (`cd ios && pod cache clean --all && pod install`).
+
+### Android 12 Compatibility
+
+**Known Issue**: Some users may encounter a crash on Android 12 with the error `dlopen failed: library "libmmkv.so" not found`. This is due to Android 12's stricter security policies around native libraries.
+
+**Resolution**: This library includes robust error handling for MMKV initialization failures. If MMKV fails to initialize:
+- The app will not crash
+- Downloads will continue to function normally
+- Download persistence across app restarts may not be available
+- Appropriate warnings are logged for debugging
+
+**Workaround**: If you encounter this issue frequently:
+1. Ensure you're using the latest version of this library
+2. Clean and rebuild your project: `cd android && ./gradlew clean && cd .. && npx react-native run-android`
+3. If the issue persists, downloads will work without persistence functionality
+
+### Architecture Compatibility (x86/ARMv7)
+
+**Known Issue**: MMKV 2.1.0+ does not support x86 and ARMv7 architectures, which can cause crashes on older Android devices or emulators using these architectures.
+
+**Resolution**: This library provides comprehensive fallback support:
+- **Automatic Detection**: The library detects when MMKV is not available due to architecture limitations
+- **SharedPreferences Fallback**: Uses Android's SharedPreferences as a fallback storage mechanism
+- **Graceful Degradation**: All download functionality continues to work normally
+- **Persistence Support**: Basic persistence across app restarts is maintained using the fallback storage
+- **Enhanced Logging**: Clear messages indicate when fallback storage is being used
+
+**Supported Scenarios**:
+- ✅ **ARM64**: Full MMKV support with optimal performance
+- ✅ **ARMv7**: SharedPreferences fallback with full functionality
+- ✅ **x86**: SharedPreferences fallback with full functionality  
+- ✅ **x86_64**: Full MMKV support with optimal performance
+
+**What this means for you**:
+- No code changes required - the fallback is automatic
+- Downloads work on all Android architectures
+- Persistence across app restarts works on all architectures
+- Performance is optimal on supported architectures, good on fallback architectures
 
 ## Usage
 
@@ -338,6 +412,44 @@ This library automatically includes connection timeout improvements for slow-res
 
 These headers help prevent downloads from getting stuck in "pending" state when servers take several minutes to respond initially. You can override these headers by providing your own in the `headers` option.
 
+### Handling URLs with Many Redirects (Android)
+
+Android's DownloadManager has a built-in redirect limit that can cause `ERROR_TOO_MANY_REDIRECTS` for URLs with multiple redirects (common with podcast URLs, tracking services, CDNs, etc.).
+
+To handle this, you can use the `maxRedirects` option to pre-resolve redirects before passing the final URL to DownloadManager:
+
+```javascript
+import { Platform } from 'react-native'
+import { download, directories } from '@kesha-antonov/react-native-background-downloader'
+
+// Example: Podcast URL with multiple redirects
+let task = download({
+  id: 'podcast-episode',
+  url: 'https://pdst.fm/e/chrt.fm/track/479722/arttrk.com/p/example.mp3',
+  destination: `${directories.documents}/episode.mp3`,
+  maxRedirects: 10, // Follow up to 10 redirects before downloading
+}).begin(({ expectedBytes }) => {
+  console.log(`Going to download ${expectedBytes} bytes!`)
+}).progress(({ bytesDownloaded, bytesTotal }) => {
+  console.log(`Downloaded: ${bytesDownloaded / bytesTotal * 100}%`)
+}).done(({ bytesDownloaded, bytesTotal }) => {
+  console.log('Download is done!', { bytesDownloaded, bytesTotal })
+}).error(({ error, errorCode }) => {
+  console.log('Download canceled due to error: ', { error, errorCode })
+  
+  if (errorCode === 1005) { // ERROR_TOO_MANY_REDIRECTS
+    console.log('Consider increasing maxRedirects or using a different URL')
+  }
+})
+```
+
+**Notes on maxRedirects:**
+- Only available on Android (iOS handles redirects automatically)
+- If not specified or set to 0, no redirect resolution is performed
+- Uses HEAD requests to resolve redirects efficiently
+- Falls back to original URL if redirect resolution fails
+- Respects the same headers and timeouts as the main download
+
 ## API
 
 ### RNBackgroundDownloader
@@ -357,6 +469,7 @@ An object containing options properties
 | `destination` | String |    ✅     |    All    | Where to copy the file to once the download is done |
 | `metadata`    | Object |           |    All    | Data to be preserved on reboot. |
 | `headers`     | Object |           |    All    | Costume headers to add to the download request. These are merged with the headers given in the `setConfig({ headers: { ... } })` function |
+| `maxRedirects` | Number |          |  Android  | Maximum number of redirects to follow before passing URL to DownloadManager. If not specified or 0, no redirect resolution is performed. Helps avoid ERROR_TOO_MANY_REDIRECTS for URLs with many redirects (e.g., podcast URLs) |
 | `isAllowedOverRoaming` | Boolean   |          |  Android  | whether this download may proceed over a roaming connection. By default, roaming is allowed |
 | `isAllowedOverMetered` | Boolean   |          |  Android  | Whether this download may proceed over a metered network connection. By default, metered networks are allowed |
 | `isNotificationVisible`     | Boolean   |          |  Android  | Whether to show a download notification or not |

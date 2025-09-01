@@ -25,6 +25,8 @@ import android.app.DownloadManager.Request;
 
 import java.io.File;
 import java.io.IOException;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
@@ -51,6 +53,7 @@ import androidx.annotation.NonNull;
 import com.tencent.mmkv.MMKV;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
+import android.content.SharedPreferences;
 
 public class RNBackgroundDownloaderModuleImpl extends ReactContextBaseJavaModule {
 
@@ -79,6 +82,8 @@ public class RNBackgroundDownloaderModuleImpl extends ReactContextBaseJavaModule
   };
 
   private static MMKV mmkv;
+  private static SharedPreferences sharedPreferences;
+  private static boolean isMMKVAvailable = false;
   private final Downloader downloader;
   private BroadcastReceiver downloadReceiver;
   private static final Object sharedLock = new Object();
@@ -95,9 +100,33 @@ public class RNBackgroundDownloaderModuleImpl extends ReactContextBaseJavaModule
 
   public RNBackgroundDownloaderModuleImpl(ReactApplicationContext reactContext) {
     super(reactContext);
-    MMKV.initialize(reactContext);
-
-    mmkv = MMKV.mmkvWithID(getName());
+    
+    // Initialize SharedPreferences as fallback
+    sharedPreferences = reactContext.getSharedPreferences(getName() + "_prefs", Context.MODE_PRIVATE);
+    
+    // Try to initialize MMKV with comprehensive error handling
+    try {
+      MMKV.initialize(reactContext);
+      mmkv = MMKV.mmkvWithID(getName());
+      isMMKVAvailable = true;
+      Log.d(getName(), "MMKV initialized successfully");
+    } catch (UnsatisfiedLinkError e) {
+      Log.e(getName(), "Failed to initialize MMKV (libmmkv.so not found): " + e.getMessage());
+      Log.w(getName(), "This may be due to unsupported architecture (x86/ARMv7). Using SharedPreferences fallback.");
+      Log.w(getName(), "Download persistence across app restarts will use basic storage.");
+      mmkv = null;
+      isMMKVAvailable = false;
+    } catch (NoClassDefFoundError e) {
+      Log.e(getName(), "MMKV classes not found: " + e.getMessage());
+      Log.w(getName(), "MMKV library not available on this architecture. Using SharedPreferences fallback.");
+      mmkv = null;
+      isMMKVAvailable = false;
+    } catch (Exception e) {
+      Log.e(getName(), "Failed to initialize MMKV: " + e.getMessage());
+      Log.w(getName(), "Using SharedPreferences fallback for persistence.");
+      mmkv = null;
+      isMMKVAvailable = false;
+    }
 
     loadDownloadIdToConfigMap();
     loadConfigMap();
@@ -128,6 +157,10 @@ public class RNBackgroundDownloaderModuleImpl extends ReactContextBaseJavaModule
     constants.put("TaskSuspended", TASK_SUSPENDED);
     constants.put("TaskCanceling", TASK_CANCELING);
     constants.put("TaskCompleted", TASK_COMPLETED);
+    
+    // Expose storage type information for debugging/monitoring
+    constants.put("isMMKVAvailable", isMMKVAvailable);
+    constants.put("storageType", isMMKVAvailable ? "MMKV" : "SharedPreferences");
 
     return constants;
   }
@@ -255,6 +288,93 @@ public class RNBackgroundDownloaderModuleImpl extends ReactContextBaseJavaModule
     }
   }
 
+  /**
+   * Resolve redirects for a URL up to maxRedirects limit
+   * @param originalUrl The original URL to follow
+   * @param maxRedirects Maximum number of redirects to follow (0 means no redirect resolution)
+   * @param headers Headers to include in redirect resolution requests
+   * @return The final resolved URL, or original URL if maxRedirects is 0 or resolution fails
+   */
+  private String resolveRedirects(String originalUrl, int maxRedirects, ReadableMap headers) {
+    if (maxRedirects <= 0) {
+      return originalUrl;
+    }
+
+    try {
+      String currentUrl = originalUrl;
+      int redirectCount = 0;
+      
+      while (redirectCount < maxRedirects) {
+        java.net.URL url = new java.net.URL(currentUrl);
+        java.net.HttpURLConnection connection = (java.net.HttpURLConnection) url.openConnection();
+        
+        // Add headers to the redirect resolution request
+        if (headers != null) {
+          ReadableMapKeySetIterator iterator = headers.keySetIterator();
+          while (iterator.hasNextKey()) {
+            String headerKey = iterator.nextKey();
+            connection.setRequestProperty(headerKey, headers.getString(headerKey));
+          }
+        }
+        
+        // Add default headers for consistency with DownloadManager
+        connection.setRequestProperty("Connection", "keep-alive");
+        connection.setRequestProperty("Keep-Alive", "timeout=600, max=1000");
+        if (!hasUserAgentHeader(headers)) {
+          connection.setRequestProperty("User-Agent", "ReactNative-BackgroundDownloader/3.2.6");
+        }
+        
+        connection.setInstanceFollowRedirects(false);
+        connection.setRequestMethod("HEAD"); // Use HEAD to avoid downloading content
+        connection.setConnectTimeout(10000); // 10 second timeout
+        connection.setReadTimeout(10000);
+        
+        int responseCode = connection.getResponseCode();
+        
+        if (responseCode >= 300 && responseCode < 400) {
+          // This is a redirect
+          String location = connection.getHeaderField("Location");
+          if (location == null) {
+            Log.w(getName(), "Redirect response without Location header at: " + currentUrl);
+            break;
+          }
+          
+          // Handle relative URLs
+          if (location.startsWith("/")) {
+            java.net.URL baseUrl = new java.net.URL(currentUrl);
+            location = baseUrl.getProtocol() + "://" + baseUrl.getHost() + location;
+          } else if (!location.startsWith("http")) {
+            java.net.URL baseUrl = new java.net.URL(currentUrl);
+            location = baseUrl.getProtocol() + "://" + baseUrl.getHost() + "/" + location;
+          }
+          
+          Log.d(getName(), "Redirect " + (redirectCount + 1) + "/" + maxRedirects + ": " + currentUrl + " -> " + location);
+          currentUrl = location;
+          redirectCount++;
+        } else {
+          // Not a redirect, we've found the final URL
+          break;
+        }
+        
+        connection.disconnect();
+      }
+      
+      if (redirectCount >= maxRedirects) {
+        Log.w(getName(), "Reached maximum redirects (" + maxRedirects + ") for URL: " + originalUrl + 
+              ". Final URL: " + currentUrl);
+      } else {
+        Log.d(getName(), "Resolved URL after " + redirectCount + " redirects: " + currentUrl);
+      }
+      
+      return currentUrl;
+      
+    } catch (Exception e) {
+      Log.e(getName(), "Failed to resolve redirects for URL: " + originalUrl + ". Error: " + e.getMessage());
+      // Return original URL if redirect resolution fails
+      return originalUrl;
+    }
+  }
+
   @ReactMethod
   @SuppressWarnings("unused")
   public void download(ReadableMap options) {
@@ -280,9 +400,22 @@ public class RNBackgroundDownloaderModuleImpl extends ReactContextBaseJavaModule
     boolean isAllowedOverMetered = options.getBoolean("isAllowedOverMetered");
     boolean isNotificationVisible = options.getBoolean("isNotificationVisible");
 
+    // Get maxRedirects parameter
+    int maxRedirects = 0;
+    if (options.hasKey("maxRedirects")) {
+      maxRedirects = options.getInt("maxRedirects");
+    }
+
     if (id == null || url == null || destination == null) {
       Log.e(getName(),"download: id, url and destination must be set.");
       return;
+    }
+
+    // Resolve redirects if maxRedirects is specified
+    if (maxRedirects > 0) {
+      Log.d(getName(), "Resolving redirects for URL: " + url + " (maxRedirects: " + maxRedirects + ")");
+      url = resolveRedirects(url, maxRedirects, headers);
+      Log.d(getName(), "Final resolved URL: " + url);
     }
 
     final Request request = new Request(Uri.parse(url));
@@ -594,46 +727,110 @@ public class RNBackgroundDownloaderModuleImpl extends ReactContextBaseJavaModule
 
   private void saveDownloadIdToConfigMap() {
     synchronized (sharedLock) {
-      Gson gson = new Gson();
-      String str = gson.toJson(downloadIdToConfig);
-      mmkv.encode(getName() + "_downloadIdToConfig", str);
+      try {
+        Gson gson = new Gson();
+        String str = gson.toJson(downloadIdToConfig);
+        
+        if (isMMKVAvailable && mmkv != null) {
+          mmkv.encode(getName() + "_downloadIdToConfig", str);
+          Log.d(getName(), "Saved download config to MMKV");
+        } else if (sharedPreferences != null) {
+          sharedPreferences.edit()
+            .putString(getName() + "_downloadIdToConfig", str)
+            .apply();
+          Log.d(getName(), "Saved download config to SharedPreferences fallback");
+        } else {
+          Log.w(getName(), "No storage available, skipping download config persistence");
+        }
+      } catch (Exception e) {
+        Log.e(getName(), "Failed to save download config: " + e.getMessage());
+      }
     }
   }
 
   private void loadDownloadIdToConfigMap() {
     synchronized (sharedLock) {
+      downloadIdToConfig = new HashMap<>();
+      
       try {
-        String str = mmkv.decodeString(getName() + "_downloadIdToConfig");
+        String str = null;
+        
+        if (isMMKVAvailable && mmkv != null) {
+          str = mmkv.decodeString(getName() + "_downloadIdToConfig");
+          if (str != null) {
+            Log.d(getName(), "Loaded download config from MMKV");
+          }
+        } else if (sharedPreferences != null) {
+          str = sharedPreferences.getString(getName() + "_downloadIdToConfig", null);
+          if (str != null) {
+            Log.d(getName(), "Loaded download config from SharedPreferences fallback");
+          }
+        }
+        
         if (str != null) {
           Gson gson = new Gson();
-
-          TypeToken<Map<Long, RNBGDTaskConfig>> mapType = new TypeToken<Map<Long, RNBGDTaskConfig>>() {
-          };
-
-          downloadIdToConfig = (Map<Long, RNBGDTaskConfig>) gson.fromJson(str, mapType);
+          TypeToken<Map<Long, RNBGDTaskConfig>> mapType = new TypeToken<Map<Long, RNBGDTaskConfig>>() {};
+          downloadIdToConfig = gson.fromJson(str, mapType);
+        } else {
+          Log.d(getName(), "No existing download config found, starting with empty map");
         }
       } catch (Exception e) {
-        Log.e(getName(), "loadDownloadIdToConfigMap: " + Log.getStackTraceString(e));
+        Log.e(getName(), "Failed to load download config: " + e.getMessage());
+        downloadIdToConfig = new HashMap<>();
       }
     }
   }
 
   private void saveConfigMap() {
     synchronized (sharedLock) {
-      mmkv.encode(getName() + "_progressInterval", progressInterval);
-      mmkv.encode(getName() + "_progressMinBytes", progressMinBytes);
+      try {
+        if (isMMKVAvailable && mmkv != null) {
+          mmkv.encode(getName() + "_progressInterval", progressInterval);
+          mmkv.encode(getName() + "_progressMinBytes", progressMinBytes);
+          Log.d(getName(), "Saved config to MMKV");
+        } else if (sharedPreferences != null) {
+          sharedPreferences.edit()
+            .putInt(getName() + "_progressInterval", progressInterval)
+            .putLong(getName() + "_progressMinBytes", progressMinBytes)
+            .apply();
+          Log.d(getName(), "Saved config to SharedPreferences fallback");
+        } else {
+          Log.w(getName(), "No storage available, skipping config persistence");
+        }
+      } catch (Exception e) {
+        Log.e(getName(), "Failed to save config: " + e.getMessage());
+      }
     }
   }
 
   private void loadConfigMap() {
     synchronized (sharedLock) {
-      int progressIntervalScope = mmkv.decodeInt(getName() + "_progressInterval");
-      if (progressIntervalScope > 0) {
-        progressInterval = progressIntervalScope;
-      }
-      long progressMinBytesScope = mmkv.decodeLong(getName() + "_progressMinBytes");
-      if (progressMinBytesScope > 0) {
-        progressMinBytes = progressMinBytesScope;
+      try {
+        if (isMMKVAvailable && mmkv != null) {
+          int progressIntervalScope = mmkv.decodeInt(getName() + "_progressInterval");
+          if (progressIntervalScope > 0) {
+            progressInterval = progressIntervalScope;
+          }
+          long progressMinBytesScope = mmkv.decodeLong(getName() + "_progressMinBytes");
+          if (progressMinBytesScope > 0) {
+            progressMinBytes = progressMinBytesScope;
+          }
+          Log.d(getName(), "Loaded config from MMKV");
+        } else if (sharedPreferences != null) {
+          int progressIntervalScope = sharedPreferences.getInt(getName() + "_progressInterval", 0);
+          if (progressIntervalScope > 0) {
+            progressInterval = progressIntervalScope;
+          }
+          long progressMinBytesScope = sharedPreferences.getLong(getName() + "_progressMinBytes", 0);
+          if (progressMinBytesScope > 0) {
+            progressMinBytes = progressMinBytesScope;
+          }
+          Log.d(getName(), "Loaded config from SharedPreferences fallback");
+        } else {
+          Log.d(getName(), "No storage available, using default config values");
+        }
+      } catch (Exception e) {
+        Log.e(getName(), "Failed to load config: " + e.getMessage());
       }
     }
   }
