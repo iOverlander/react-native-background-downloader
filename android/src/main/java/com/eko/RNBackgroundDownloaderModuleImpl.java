@@ -641,7 +641,8 @@ public class RNBackgroundDownloaderModuleImpl extends ReactContextBaseJavaModule
     boolean bytesThresholdMet = bytesDownloaded - prevBytes >= progressMinBytes;
     boolean timeThresholdMet = (intervalSinceLastProgressReport > 10.0 && deltaPercent > 0.0);
 
-    if (percentThresholdMet || bytesThresholdMet || timeThresholdMet) {
+    // Report progress if either threshold is met, or if total bytes unknown (for realtime streams)
+    if (percentThresholdMet || bytesThresholdMet || bytesTotal <= 0 || timeThresholdMet) {
       WritableMap params = Arguments.createMap();
       params.putString("id", configId);
       params.putDouble("bytesDownloaded", bytesDownloaded);

@@ -30,7 +30,7 @@ static CompletionHandler storedCompletionHandler;
     NSMutableDictionary<NSString *, NSNumber *> *idToLastBytesMap;
     NSMutableDictionary<NSString *, NSDictionary *> *progressReports;
     float progressInterval;
-    long long progressMinBytes;
+    int64_t progressMinBytes;
     NSDate *lastProgressReportedAt;
     BOOL isBridgeListenerInited;
     BOOL isJavascriptLoaded;
@@ -446,7 +446,7 @@ RCT_EXPORT_METHOD(checkForExistingDownloads: (RCTPromiseResolveBlock)resolve rej
                 [self saveFile:taskConfig downloadURL:location error:&error];
             }
 
-            if (self.bridge && isJavascriptLoaded) {
+            if (self != nil) {
                 if (error == nil) {
                     NSDictionary *responseHeaders = ((NSHTTPURLResponse *)downloadTask.response).allHeaderFields;
                     [self sendEventWithName:@"downloadComplete" body:@{
@@ -487,7 +487,7 @@ RCT_EXPORT_METHOD(checkForExistingDownloads: (RCTPromiseResolveBlock)resolve rej
         if (taskConfig != nil) {
             if (!taskConfig.reportedBegin) {
                 NSDictionary *responseHeaders = ((NSHTTPURLResponse *)downloadTask.response).allHeaderFields;
-                if (self.bridge && isJavascriptLoaded) {
+                if (self != nil) {
                     [self sendEventWithName:@"downloadBegin" body:@{
                         @"id": taskConfig.id,
                         @"expectedBytes": [NSNumber numberWithLongLong: bytesTotalExpectedToWrite],
@@ -502,16 +502,25 @@ RCT_EXPORT_METHOD(checkForExistingDownloads: (RCTPromiseResolveBlock)resolve rej
 
             NSNumber *prevPercent = idToPercentMap[taskConfig.id];
             NSNumber *prevBytes = idToLastBytesMap[taskConfig.id];
-            NSNumber *percent = [NSNumber numberWithFloat:(float)bytesTotalWritten/(float)bytesTotalExpectedToWrite];
+            NSNumber *percent;
+            BOOL percentThresholdMet = NO;
+            
+            // Handle unknown total bytes (realtime streams)
+            if (bytesTotalExpectedToWrite > 0) {
+                percent = [NSNumber numberWithFloat:(float)bytesTotalWritten/(float)bytesTotalExpectedToWrite];
+                percentThresholdMet = [percent floatValue] - [prevPercent floatValue] > 0.01f;
+            } else {
+                percent = @0.0; // Unknown total, set to 0
+            }
             
             // Check if we should report progress based on percentage OR bytes threshold
             float deltaPercent = [percent floatValue] - [prevPercent floatValue];
-            BOOL percentThresholdMet = deltaPercent > 0.01f;
             long long lastReportedBytes = prevBytes ? [prevBytes longLongValue] : 0;
             BOOL bytesThresholdMet = bytesTotalWritten - lastReportedBytes >= progressMinBytes;
             BOOL timeThresholdMet = (intervalSinceLastProgressReport > 10.0f && deltaPercent > 0.0f);
             
-            if (percentThresholdMet || bytesThresholdMet || timeThresholdMet) {
+            // Report progress if either threshold is met, or if total bytes unknown (for streams)
+            if (percentThresholdMet || bytesThresholdMet || bytesTotalExpectedToWrite <= 0 || timeThresholdMet) {
                 progressReports[taskConfig.id] = @{
                     @"id": taskConfig.id,
                     @"bytesDownloaded": [NSNumber numberWithLongLong: bytesTotalWritten],
@@ -522,7 +531,7 @@ RCT_EXPORT_METHOD(checkForExistingDownloads: (RCTPromiseResolveBlock)resolve rej
             }
 
             if (intervalSinceLastProgressReport > progressInterval && progressReports.count > 0) {
-                if (self.bridge && isJavascriptLoaded) {
+                if (self != nil) {
                     [self sendEventWithName:@"downloadProgress" body:[progressReports allValues]];
                 }
                 lastProgressReportedAt = now;
@@ -547,7 +556,7 @@ RCT_EXPORT_METHOD(checkForExistingDownloads: (RCTPromiseResolveBlock)resolve rej
         // -999 code represents incomplete tasks.
         // Required to continue resume tasks.
         if (error.code != -999) {
-            if (self.bridge && isJavascriptLoaded) {
+            if (self != nil) {
                 [self sendEventWithName:@"downloadFailed" body:@{
                     @"id": taskConfig.id,
                     @"error": [error localizedDescription],
