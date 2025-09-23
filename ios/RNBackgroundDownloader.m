@@ -530,7 +530,8 @@ RCT_EXPORT_METHOD(checkForExistingDownloads: (RCTPromiseResolveBlock)resolve rej
                 idToLastBytesMap[taskConfig.id] = [NSNumber numberWithLongLong: bytesTotalWritten];
             }
 
-            if (intervalSinceLastProgressReport > progressInterval && progressReports.count > 0) {
+
+            if ([now timeIntervalSinceDate:lastProgressReportedAt] > progressInterval && progressReports.count > 0) {
                 if (self != nil) {
                     [self sendEventWithName:@"downloadProgress" body:[progressReports allValues]];
                 }
