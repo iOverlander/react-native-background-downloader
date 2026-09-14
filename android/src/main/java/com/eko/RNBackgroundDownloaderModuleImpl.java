@@ -250,11 +250,11 @@ public class RNBackgroundDownloaderModuleImpl extends ReactContextBaseJavaModule
 
   private void resumeTasks(Long downloadId, RNBGDTaskConfig config) {
     new Thread(() -> {
-      try {
-        long bytesDownloaded = 0;
-        long bytesTotal = 0;
+      long bytesDownloaded = 0;
+      long bytesTotal = 0;
 
-        if (!config.reportedBegin) {
+      if (!config.reportedBegin) {
+        try {
           OnBegin onBeginCallable = new OnBegin(config, this::onBeginDownload);
           Future<OnBeginState> onBeginFuture = cachedExecutorPool.submit(onBeginCallable);
           OnBeginState onBeginState = onBeginFuture.get();
@@ -263,8 +263,14 @@ public class RNBackgroundDownloaderModuleImpl extends ReactContextBaseJavaModule
           config.reportedBegin = true;
           downloadIdToConfig.put(downloadId, config);
           saveDownloadIdToConfigMap();
+        } catch (Exception e) {
+          // DownloadManager owns the download, so failing to read the expected
+          // size must not stop progress from being reported.
+          Log.e(getName(), "resumeTasks onBegin: " + Log.getStackTraceString(e));
         }
+      }
 
+      try {
         OnProgress onProgressCallable = new OnProgress(config, downloader, downloadId, bytesDownloaded, bytesTotal, this::onProgressDownload);
         Future<OnProgressState> onProgressFuture = cachedExecutorPool.submit(onProgressCallable);
         configIdToProgressFuture.put(config.id, onProgressFuture);

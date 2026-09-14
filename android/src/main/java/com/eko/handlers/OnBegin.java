@@ -11,6 +11,7 @@ import java.util.concurrent.Callable;
 import com.eko.interfaces.BeginCallback;
 import com.eko.RNBGDTaskConfig;
 
+import com.facebook.react.bridge.ReadableMapKeySetIterator;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.bridge.Arguments;
 
@@ -47,9 +48,11 @@ public class OnBegin implements Callable<OnBeginState> {
   private HttpURLConnection getConnection(String urlString) throws Exception {
     URL url = new URL(urlString);
     HttpURLConnection urlConnection = (HttpURLConnection) url.openConnection();
-    // Requests only headers from the server.
-    // Prevents memory leaks for invalid connections.
-    urlConnection.setRequestMethod("HEAD");
+    // Requests only the first byte from the server.
+    // Prevents memory leaks for invalid connections and, unlike HEAD, works
+    // with pre-signed urls, which are only valid for the method they signed.
+    urlConnection.setRequestMethod("GET");
+    urlConnection.setRequestProperty("Range", "bytes=0-0");
 
     // Set timeout values to prevent downloads from staying in PENDING state
     // when URLs are slow to respond (e.g., taking 2-6 minutes)
@@ -78,7 +81,20 @@ public class OnBegin implements Callable<OnBeginState> {
   }
 
   private long getContentLength(WritableMap headersMap) {
-    String contentLengthString = headersMap.getString("Content-Length");
+    String contentRangeString = getHeaderValue(headersMap, "Content-Range");
+
+    if (contentRangeString != null) {
+      int totalIndex = contentRangeString.lastIndexOf('/');
+      if (totalIndex != -1) {
+        try {
+          return Long.parseLong(contentRangeString.substring(totalIndex + 1).trim());
+        } catch (NumberFormatException e) {
+          // Falls back to Content-Length below.
+        }
+      }
+    }
+
+    String contentLengthString = getHeaderValue(headersMap, "Content-Length");
 
     if (contentLengthString != null) {
       try {
@@ -89,5 +105,18 @@ public class OnBegin implements Callable<OnBeginState> {
     }
 
     return 0;
+  }
+
+  private String getHeaderValue(WritableMap headersMap, String name) {
+    ReadableMapKeySetIterator iterator = headersMap.keySetIterator();
+
+    while (iterator.hasNextKey()) {
+      String key = iterator.nextKey();
+      if (key != null && key.equalsIgnoreCase(name)) {
+        return headersMap.getString(key);
+      }
+    }
+
+    return null;
   }
 }
