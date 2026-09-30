@@ -2,9 +2,6 @@
 #
 .DS_Store
 
-# Compiled JS output (built on prepare/prepublish, shipped to npm via "files")
-lib/
-
 # Xcode
 #
 build/
@@ -28,6 +25,7 @@ DerivedData
 # Android/IntelliJ
 #
 build/
+!plugin/build/
 .idea
 .gradle
 local.properties

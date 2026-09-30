@@ -1,0 +1,30 @@
+import { UploadTaskInfo, UploadTask as UploadTaskType, UploadBeginHandler, UploadProgressHandler, UploadDoneHandler, UploadErrorHandler, UploadBeginHandlerParams, UploadProgressHandlerParams, UploadDoneHandlerParams, UploadErrorHandlerParams, UploadTaskInfoNative, UploadParams, UploadTaskState, Metadata } from './types';
+export declare class UploadTask {
+    id: string;
+    metadata: Metadata;
+    state: UploadTaskState;
+    errorCode: number;
+    bytesUploaded: number;
+    bytesTotal: number;
+    uploadParams?: UploadParams;
+    beginHandler?: UploadBeginHandler;
+    progressHandler?: UploadProgressHandler;
+    doneHandler?: UploadDoneHandler;
+    errorHandler?: UploadErrorHandler;
+    constructor(taskParams: UploadTaskInfo | UploadTaskInfoNative, originalTask?: UploadTaskType);
+    begin(handler: UploadBeginHandler): this;
+    progress(handler: UploadProgressHandler): this;
+    done(handler: UploadDoneHandler): this;
+    error(handler: UploadErrorHandler): this;
+    onBegin(params: UploadBeginHandlerParams): void;
+    onProgress(params: UploadProgressHandlerParams): void;
+    onDone(params: UploadDoneHandlerParams): void;
+    onError(params: UploadErrorHandlerParams): void;
+    setUploadParams(uploadParams: UploadParams): void;
+    pause(): Promise<void>;
+    resume(): Promise<void>;
+    start(): void;
+    stop(): Promise<void>;
+    tryParseJson(metadata?: string | Metadata | object): Metadata | null;
+    private headersToUnsafeObject;
+}
