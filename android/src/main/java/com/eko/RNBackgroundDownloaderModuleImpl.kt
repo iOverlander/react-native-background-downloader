@@ -471,11 +471,11 @@ class RNBackgroundDownloaderModuleImpl(private val reactContext: ReactApplicatio
 
   private fun resumeTasks(downloadId: Long, config: RNBGDTaskConfig) {
     Thread {
-      try {
-        var bytesDownloaded: Long = 0
-        var bytesTotal: Long = 0
+      var bytesDownloaded: Long = 0
+      var bytesTotal: Long = 0
 
-        if (!config.reportedBegin) {
+      if (!config.reportedBegin) {
+        try {
           val onBeginCallable = OnBegin(config, this::onBeginDownload)
           val onBeginFuture = cachedExecutorPool.submit(onBeginCallable)
           val onBeginState = onBeginFuture.get()
@@ -484,8 +484,12 @@ class RNBackgroundDownloaderModuleImpl(private val reactContext: ReactApplicatio
           config.reportedBegin = true
           downloadIdToConfig[downloadId] = config
           saveDownloadIdToConfigMap()
+        } catch (e: Exception) {
+          logE(NAME, "resumeTasks onBegin: ${Log.getStackTraceString(e)}")
         }
+      }
 
+      try {
         val onProgressCallable = OnProgress(
           config,
           downloader,

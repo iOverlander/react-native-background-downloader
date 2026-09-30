@@ -41,9 +41,8 @@ class OnBegin(
     private fun getConnection(urlString: String): HttpURLConnection {
         val url = URL(urlString)
         val urlConnection = url.openConnection() as HttpURLConnection
-        // Requests only headers from the server.
-        // Prevents memory leaks for invalid connections.
-        urlConnection.requestMethod = "HEAD"
+        urlConnection.requestMethod = "GET"
+        urlConnection.setRequestProperty("Range", "bytes=0-0")
 
         // Set timeout values to prevent downloads from staying in PENDING state
         // when URLs are slow to respond (e.g., taking 2-6 minutes)
@@ -71,7 +70,13 @@ class OnBegin(
     }
 
     private fun getContentLength(headersMap: WritableMap): Long {
-        val contentLengthString = headersMap.getString("Content-Length")
+        getHeaderValue(headersMap, "Content-Range")
+            ?.substringAfterLast('/', "")
+            ?.trim()
+            ?.toLongOrNull()
+            ?.let { return it }
+
+        val contentLengthString = getHeaderValue(headersMap, "Content-Length")
 
         return if (contentLengthString != null) {
             try {
@@ -82,5 +87,16 @@ class OnBegin(
         } else {
             -1L // Unknown size - server didn't provide Content-Length
         }
+    }
+
+    private fun getHeaderValue(headersMap: WritableMap, name: String): String? {
+        val iterator = headersMap.keySetIterator()
+        while (iterator.hasNextKey()) {
+            val key = iterator.nextKey()
+            if (key.equals(name, ignoreCase = true)) {
+                return headersMap.getString(key)
+            }
+        }
+        return null
     }
 }
