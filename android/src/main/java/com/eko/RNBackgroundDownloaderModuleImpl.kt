@@ -9,7 +9,6 @@ import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.util.Log
-import android.webkit.MimeTypeMap
 import com.eko.handlers.OnBegin
 import com.eko.handlers.OnProgress
 import com.eko.handlers.OnProgressState
@@ -699,19 +698,14 @@ class RNBackgroundDownloaderModuleImpl(private val reactContext: ReactApplicatio
       }
     }
 
-    // DownloadManager requires external storage for downloads
-    // Use app's private external files directory: /storage/emulated/0/Android/data/<package>/files/
-    // This keeps files private to the app while being compatible with DownloadManager
-    val uuid = (System.currentTimeMillis() and 0xfffffff).toInt()
-    val extension = MimeTypeMap.getFileExtensionFromUrl(destination)
-    val filename = "$uuid.$extension"
-
     // Get external files directory and validate it's a proper external storage path
     val externalFilesDir = reactContext.getExternalFilesDir(null)
     val isValidExternalPath = externalFilesDir != null &&
         (externalFilesDir.absolutePath.startsWith("/storage/") ||
          externalFilesDir.absolutePath.startsWith("/sdcard/") ||
          externalFilesDir.absolutePath.startsWith("/mnt/"))
+    val isDestinationInExternalFilesDir = isValidExternalPath &&
+        File(destination).canonicalPath.startsWith(externalFilesDir!!.canonicalPath + File.separator)
 
     // Save headers for potential pause/resume functionality
     val headersMap = HeaderUtils.toMap(headers)
@@ -804,40 +798,25 @@ class RNBackgroundDownloaderModuleImpl(private val reactContext: ReactApplicatio
       logD(NAME, "Android 14+: no UIDT job for $id, using DownloadManager")
     }
 
-    if (isValidExternalPath) {
-      // Use DownloadManager with valid external storage path
-      // Download directly to final destination to avoid file duplication
-      val destFile = File(destination)
-      val parentDir = destFile.parentFile
-      if (parentDir != null && !parentDir.exists()) {
-        parentDir.mkdirs()
-      }
-      request.setDestinationUri(Uri.fromFile(destFile))
-      try {
-        startDownloadManagerDownload(downloader.download(request))
-      } catch (e: SecurityException) {
-        // Handle "Unsupported path" SecurityException on Android 16+
-        logW(NAME, "DownloadManager SecurityException (path not supported): ${e.message}")
-        logD(NAME, "Falling back to ResumableDownloader for download: $id")
-        startWithResumableDownloader()
-      }
-    } else {
-      // External files directory path is invalid or null
-      // Try setDestinationInExternalFilesDir as fallback, then ResumableDownloader if that fails
-      logW(NAME, "External files directory path may be invalid for DownloadManager: ${externalFilesDir?.absolutePath}")
+    if (!isDestinationInExternalFilesDir) {
+      logD(NAME, "Destination is outside external files directory (${externalFilesDir?.absolutePath}), using ResumableDownloader for download: $id")
+      startWithResumableDownloader()
+      return
+    }
 
-      try {
-        // Try standard setDestinationInExternalFilesDir - may work on some devices
-        request.setDestinationInExternalFilesDir(reactContext, null, filename)
-        startDownloadManagerDownload(downloader.download(request))
-        logD(NAME, "Using setDestinationInExternalFilesDir for download: $id")
-      } catch (e: Exception) {
-        // DownloadManager failed - fall back to ResumableDownloader
-        // This handles OnePlus and other devices that return paths like /data/local/tmp/external/
-        logW(NAME, "DownloadManager failed with: ${e.message}")
-        logD(NAME, "Using ResumableDownloader as fallback for download: $id")
-        startWithResumableDownloader()
-      }
+    // Download directly to final destination to avoid file duplication
+    val destFile = File(destination)
+    val parentDir = destFile.parentFile
+    if (parentDir != null && !parentDir.exists()) {
+      parentDir.mkdirs()
+    }
+    request.setDestinationUri(Uri.fromFile(destFile))
+    try {
+      startDownloadManagerDownload(downloader.download(request))
+    } catch (e: SecurityException) {
+      logW(NAME, "DownloadManager SecurityException (path not supported): ${e.message}")
+      logD(NAME, "Falling back to ResumableDownloader for download: $id")
+      startWithResumableDownloader()
     }
   }
 
